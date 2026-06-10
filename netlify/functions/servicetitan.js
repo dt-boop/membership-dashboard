@@ -113,8 +113,6 @@ async function fetchEmployeeNames(token) {
   const endpoints = [
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`,
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/technicians`,
-    `${ST_API_BASE}/dispatch/v2/tenant/${tenantId}/technicians`,
-    `${ST_API_BASE}/jpm/v2/tenant/${tenantId}/technicians`,
   ];
 
   for (const base of endpoints) {
@@ -147,8 +145,6 @@ async function fetchEmployeeNames(token) {
     }
   }
 
-  // Store debug info globally so handler can include it
-  fetchEmployeeNames._debug = debugInfo;
   return map;
 }
 
@@ -283,7 +279,6 @@ exports.handler = async (event) => {
           soldCount: sold.length,
           cancelledCount: cancelled.length,
           netGain: sold.length - cancelled.length,
-          _employeeDebug: fetchEmployeeNames._debug,
         },
       }),
     };
