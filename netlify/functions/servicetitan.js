@@ -104,32 +104,11 @@ async function fetchMembershipTypeNames(token, ids) {
   }
 }
 
-// Fetch all employees/technicians and build an ID->name map
-async function fetchAllFromEndpoint(token, url) {
-  const allItems = [];
-  let page = 1;
-  let hasMore = true;
-  while (hasMore && page <= 5) {
-    url.searchParams.set('page', page.toString());
-    const response = await fetch(url.toString(), { headers: stHeaders(token) });
-    if (!response.ok) {
-      const text = await response.text();
-      console.warn(`Endpoint failed (${response.status}):`, text.slice(0, 200));
-      return null; // signal failure
-    }
-    const data = await response.json();
-    const items = data.data || [];
-    allItems.push(...items);
-    hasMore = data.hasMore === true || items.length === 500;
-    page++;
-  }
-  return allItems;
-}
-
-// Try to resolve employee names — fetches all employees, then all technicians
+// Try to resolve employee names — fetches from multiple endpoints
 async function fetchEmployeeNames(token) {
   const tenantId = process.env.ST_TENANT_ID;
   const map = {};
+  const debugInfo = [];
 
   const endpoints = [
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`,
@@ -140,23 +119,34 @@ async function fetchEmployeeNames(token) {
     try {
       const url = new URL(base);
       url.searchParams.set('pageSize', '500');
-      url.searchParams.set('active', 'true');
-      const items = await fetchAllFromEndpoint(token, url);
-      if (items && items.length > 0) {
-        items.forEach(emp => {
-          if (emp.id) {
-            map[emp.id] = emp.name ||
-              `${emp.firstName || ''} ${emp.lastName || ''}`.trim() ||
-              String(emp.id);
-          }
-        });
-        console.log(`Loaded ${items.length} records from ${base}`);
+      // No active filter — include all
+
+      const response = await fetch(url.toString(), { headers: stHeaders(token) });
+      const text = await response.text();
+
+      if (!response.ok) {
+        debugInfo.push({ endpoint: base, status: response.status, error: text.slice(0, 300) });
+        continue;
       }
+
+      const data = JSON.parse(text);
+      const items = data.data || [];
+      debugInfo.push({ endpoint: base, status: response.status, count: items.length });
+
+      items.forEach(emp => {
+        if (emp.id) {
+          map[emp.id] = emp.name ||
+            `${emp.firstName || ''} ${emp.lastName || ''}`.trim() ||
+            String(emp.id);
+        }
+      });
     } catch (err) {
-      console.warn('fetchEmployeeNames error:', err.message);
+      debugInfo.push({ endpoint: base, error: err.message });
     }
   }
 
+  // Store debug info globally so handler can include it
+  fetchEmployeeNames._debug = debugInfo;
   return map;
 }
 
@@ -290,6 +280,7 @@ exports.handler = async (event) => {
           soldCount: sold.length,
           cancelledCount: cancelled.length,
           netGain: sold.length - cancelled.length,
+          _employeeDebug: fetchEmployeeNames._debug,
         },
       }),
     };
