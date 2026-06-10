@@ -32,14 +32,19 @@ async function getAccessToken() {
 
   const data = await response.json();
   cachedToken = data.access_token;
-  // Expire 60s early to avoid edge cases
   tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
   return cachedToken;
 }
 
+function stHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    'ST-App-Key': process.env.ST_APP_KEY,
+  };
+}
+
 async function fetchAllMemberships(token, queryParams) {
   const tenantId = process.env.ST_TENANT_ID;
-  const appKey = process.env.ST_APP_KEY;
   let allItems = [];
   let page = 1;
   let hasMore = true;
@@ -52,12 +57,7 @@ async function fetchAllMemberships(token, queryParams) {
       if (v != null) url.searchParams.set(k, v);
     });
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'ST-App-Key': appKey,
-      },
-    });
+    const response = await fetch(url.toString(), { headers: stHeaders(token) });
 
     if (!response.ok) {
       const text = await response.text();
@@ -67,8 +67,6 @@ async function fetchAllMemberships(token, queryParams) {
     const data = await response.json();
     const items = data.data || [];
     allItems = allItems.concat(items);
-
-    // ST returns hasMore or we infer it from page size
     hasMore = data.hasMore === true || items.length === 500;
     page++;
   }
@@ -76,91 +74,130 @@ async function fetchAllMemberships(token, queryParams) {
   return allItems;
 }
 
-// Build a map of employee ID -> name by fetching from the employees endpoint
-async function fetchEmployeeNames(token, ids) {
+// Fetch membership type names — we have "Read: Membership Types" scope
+async function fetchMembershipTypeNames(token, ids) {
   if (!ids || ids.length === 0) return {};
-
   const tenantId = process.env.ST_TENANT_ID;
-  const appKey = process.env.ST_APP_KEY;
   const uniqueIds = [...new Set(ids.filter(Boolean))];
 
-  // ServiceTitan employees endpoint (settings/v2)
-  const url = new URL(`${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`);
-  url.searchParams.set('pageSize', '500');
-  url.searchParams.set('ids', uniqueIds.join(','));
-
   try {
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'ST-App-Key': appKey,
-      },
-    });
+    const url = new URL(`${ST_API_BASE}/memberships/v2/tenant/${tenantId}/membership-types`);
+    url.searchParams.set('pageSize', '500');
+    url.searchParams.set('ids', uniqueIds.join(','));
 
+    const response = await fetch(url.toString(), { headers: stHeaders(token) });
     if (!response.ok) {
-      console.warn('Employees endpoint failed:', response.status, await response.text());
+      console.warn('MembershipTypes lookup failed:', response.status);
       return {};
     }
 
     const data = await response.json();
-    const nameMap = {};
-    (data.data || []).forEach(emp => {
-      if (emp.id) {
-        nameMap[emp.id] = emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || String(emp.id);
-      }
+    const map = {};
+    (data.data || []).forEach(t => {
+      if (t.id) map[t.id] = t.name || String(t.id);
     });
-    return nameMap;
+    return map;
   } catch (err) {
-    console.warn('fetchEmployeeNames error:', err.message);
+    console.warn('fetchMembershipTypeNames error:', err.message);
     return {};
   }
 }
 
-function getMembershipTypeId(item) {
-  return item.membershipTypeId || null;
+// Try to resolve employee names — tries technicians endpoint first, then employees
+async function fetchEmployeeNames(token, ids) {
+  if (!ids || ids.length === 0) return {};
+  const tenantId = process.env.ST_TENANT_ID;
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+
+  const endpoints = [
+    `${ST_API_BASE}/settings/v2/tenant/${tenantId}/technicians`,
+    `${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`,
+  ];
+
+  for (const base of endpoints) {
+    try {
+      const url = new URL(base);
+      url.searchParams.set('pageSize', '500');
+      url.searchParams.set('ids', uniqueIds.join(','));
+
+      const response = await fetch(url.toString(), { headers: stHeaders(token) });
+      if (!response.ok) {
+        console.warn(`${base} failed:`, response.status);
+        continue;
+      }
+
+      const data = await response.json();
+      const items = data.data || [];
+      if (items.length === 0) continue;
+
+      const map = {};
+      items.forEach(emp => {
+        if (emp.id) {
+          map[emp.id] = emp.name ||
+            `${emp.firstName || ''} ${emp.lastName || ''}`.trim() ||
+            String(emp.id);
+        }
+      });
+      return map;
+    } catch (err) {
+      console.warn('fetchEmployeeNames error:', err.message);
+    }
+  }
+
+  return {};
 }
 
-// We can't get membership type names without a separate lookup; use ID for now
-// but we'll use it only for "Free" filtering if a name lookup is available
-function getMembershipTypeName(item) {
+function getSoldById(item) {
+  return item.soldById || item.createdById || item.activatedById || null;
+}
+
+function filterFreeTypes(items, typeNameMap) {
+  return items.filter(item => {
+    // Check embedded name first, then look up in our map
+    const embeddedName = (
+      item.membershipType?.name ||
+      item.type?.name ||
+      item.membershipTypeName ||
+      ''
+    ).toLowerCase();
+    if (embeddedName) return !embeddedName.includes('free');
+
+    const mappedName = (typeNameMap[item.membershipTypeId] || '').toLowerCase();
+    return !mappedName.includes('free');
+  });
+}
+
+function getTypeName(item, typeNameMap) {
   return (
     item.membershipType?.name ||
     item.type?.name ||
     item.membershipTypeName ||
-    ''
+    typeNameMap[item.membershipTypeId] ||
+    `Type #${item.membershipTypeId || '?'}`
   );
 }
 
-function getSoldById(item) {
-  // Use soldById first, fall back to createdById then activatedById
-  return item.soldById || item.createdById || item.activatedById || null;
-}
-
-function filterFreeTypes(items) {
-  return items.filter(item => {
-    const typeName = getMembershipTypeName(item).toLowerCase();
-    // If no type name resolved (just an ID), allow through — we can't filter by name
-    return !typeName || !typeName.includes('free');
-  });
-}
-
-function processSoldItem(item, nameMap) {
+function getSoldByName(item, nameMap) {
   const id = getSoldById(item);
+  if (!id) return 'Unknown';
+  return nameMap[id] || `Employee #${id}`;
+}
+
+function processSoldItem(item, nameMap, typeNameMap) {
   return {
     id: item.id,
-    soldBy: (id && nameMap[id]) ? nameMap[id] : 'Unknown',
-    membershipType: getMembershipTypeName(item) || `Type #${item.membershipTypeId || '?'}`,
+    soldBy: getSoldByName(item, nameMap),
+    membershipType: getTypeName(item, typeNameMap),
     createdOn: item.createdOn || item.from,
     status: item.status,
   };
 }
 
-function processCancelledItem(item, nameMap) {
-  const id = getSoldById(item);
+function processCancelledItem(item, nameMap, typeNameMap) {
   return {
     id: item.id,
-    soldBy: (id && nameMap[id]) ? nameMap[id] : 'Unknown',
-    membershipType: getMembershipTypeName(item) || `Type #${item.membershipTypeId || '?'}`,
+    soldBy: getSoldByName(item, nameMap),
+    membershipType: getTypeName(item, typeNameMap),
     cancelledOn: item.cancellationDate || item.modifiedOn,
     status: item.status,
   };
@@ -178,11 +215,7 @@ exports.handler = async (event) => {
   }
 
   if (event.httpMethod !== 'GET') {
-    return {
-      statusCode: 405,
-      headers,
-      body: JSON.stringify({ error: 'Method not allowed' }),
-    };
+    return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
   const { startDate, endDate } = event.queryStringParameters || {};
@@ -191,7 +224,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ error: 'startDate and endDate query params are required (YYYY-MM-DD)' }),
+      body: JSON.stringify({ error: 'startDate and endDate query params required (YYYY-MM-DD)' }),
     };
   }
 
@@ -206,7 +239,6 @@ exports.handler = async (event) => {
   try {
     const token = await getAccessToken();
 
-    // Fetch sold and cancelled in parallel
     const [soldRaw, cancelledRaw] = await Promise.all([
       fetchAllMemberships(token, {
         createdOnOrAfter: `${startDate}T00:00:00Z`,
@@ -219,13 +251,20 @@ exports.handler = async (event) => {
       }),
     ]);
 
-    // Collect all employee IDs we need to resolve
     const allItems = [...soldRaw, ...cancelledRaw];
-    const employeeIds = allItems.map(getSoldById).filter(Boolean);
-    const nameMap = await fetchEmployeeNames(token, employeeIds);
 
-    const sold = filterFreeTypes(soldRaw).map(item => processSoldItem(item, nameMap));
-    const cancelled = filterFreeTypes(cancelledRaw).map(item => processCancelledItem(item, nameMap));
+    // Collect IDs to look up
+    const employeeIds = allItems.map(getSoldById).filter(Boolean);
+    const typeIds = allItems.map(i => i.membershipTypeId).filter(Boolean);
+
+    // Fetch lookup maps in parallel
+    const [nameMap, typeNameMap] = await Promise.all([
+      fetchEmployeeNames(token, employeeIds),
+      fetchMembershipTypeNames(token, typeIds),
+    ]);
+
+    const sold = filterFreeTypes(soldRaw, typeNameMap).map(item => processSoldItem(item, nameMap, typeNameMap));
+    const cancelled = filterFreeTypes(cancelledRaw, typeNameMap).map(item => processCancelledItem(item, nameMap, typeNameMap));
 
     return {
       statusCode: 200,
