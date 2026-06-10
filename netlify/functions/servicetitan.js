@@ -4,7 +4,8 @@
 const ST_AUTH_URL = 'https://auth.servicetitan.io/connect/token';
 const ST_API_BASE = 'https://api.servicetitan.io';
 
-// In-memory token cache (resets on cold start, which is fine)
+// In-memory token cache (resets on cold start)
+// Set to null to force refresh and pick up any new API scopes
 let cachedToken = null;
 let tokenExpiry = null;
 
@@ -103,48 +104,60 @@ async function fetchMembershipTypeNames(token, ids) {
   }
 }
 
-// Try to resolve employee names — tries technicians endpoint first, then employees
-async function fetchEmployeeNames(token, ids) {
-  if (!ids || ids.length === 0) return {};
+// Fetch all employees/technicians and build an ID->name map
+async function fetchAllFromEndpoint(token, url) {
+  const allItems = [];
+  let page = 1;
+  let hasMore = true;
+  while (hasMore && page <= 5) {
+    url.searchParams.set('page', page.toString());
+    const response = await fetch(url.toString(), { headers: stHeaders(token) });
+    if (!response.ok) {
+      const text = await response.text();
+      console.warn(`Endpoint failed (${response.status}):`, text.slice(0, 200));
+      return null; // signal failure
+    }
+    const data = await response.json();
+    const items = data.data || [];
+    allItems.push(...items);
+    hasMore = data.hasMore === true || items.length === 500;
+    page++;
+  }
+  return allItems;
+}
+
+// Try to resolve employee names — fetches all employees, then all technicians
+async function fetchEmployeeNames(token) {
   const tenantId = process.env.ST_TENANT_ID;
-  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  const map = {};
 
   const endpoints = [
-    `${ST_API_BASE}/settings/v2/tenant/${tenantId}/technicians`,
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`,
+    `${ST_API_BASE}/settings/v2/tenant/${tenantId}/technicians`,
   ];
 
   for (const base of endpoints) {
     try {
       const url = new URL(base);
       url.searchParams.set('pageSize', '500');
-      url.searchParams.set('ids', uniqueIds.join(','));
-
-      const response = await fetch(url.toString(), { headers: stHeaders(token) });
-      if (!response.ok) {
-        console.warn(`${base} failed:`, response.status);
-        continue;
+      url.searchParams.set('active', 'true');
+      const items = await fetchAllFromEndpoint(token, url);
+      if (items && items.length > 0) {
+        items.forEach(emp => {
+          if (emp.id) {
+            map[emp.id] = emp.name ||
+              `${emp.firstName || ''} ${emp.lastName || ''}`.trim() ||
+              String(emp.id);
+          }
+        });
+        console.log(`Loaded ${items.length} records from ${base}`);
       }
-
-      const data = await response.json();
-      const items = data.data || [];
-      if (items.length === 0) continue;
-
-      const map = {};
-      items.forEach(emp => {
-        if (emp.id) {
-          map[emp.id] = emp.name ||
-            `${emp.firstName || ''} ${emp.lastName || ''}`.trim() ||
-            String(emp.id);
-        }
-      });
-      return map;
     } catch (err) {
       console.warn('fetchEmployeeNames error:', err.message);
     }
   }
 
-  return {};
+  return map;
 }
 
 function getSoldById(item) {
@@ -253,13 +266,12 @@ exports.handler = async (event) => {
 
     const allItems = [...soldRaw, ...cancelledRaw];
 
-    // Collect IDs to look up
-    const employeeIds = allItems.map(getSoldById).filter(Boolean);
+    // Collect type IDs to look up
     const typeIds = allItems.map(i => i.membershipTypeId).filter(Boolean);
 
-    // Fetch lookup maps in parallel
+    // Fetch lookup maps in parallel (employee fetch gets all, no ID filter needed)
     const [nameMap, typeNameMap] = await Promise.all([
-      fetchEmployeeNames(token, employeeIds),
+      fetchEmployeeNames(token),
       fetchMembershipTypeNames(token, typeIds),
     ]);
 
