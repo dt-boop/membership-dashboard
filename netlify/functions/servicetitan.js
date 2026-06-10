@@ -66,6 +66,11 @@ async function fetchAllMemberships(token, queryParams) {
 
     const data = await response.json();
     const items = data.data || [];
+    // Log first item keys on first page to diagnose field names
+    if (page === 1 && items.length > 0) {
+      console.log('DEBUG first item keys:', JSON.stringify(Object.keys(items[0])));
+      console.log('DEBUG first item sample:', JSON.stringify(items[0]).slice(0, 800));
+    }
     allItems = allItems.concat(items);
 
     // ST returns hasMore or we infer it from page size
