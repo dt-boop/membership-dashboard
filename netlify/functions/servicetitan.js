@@ -220,21 +220,52 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
-  const { startDate, endDate } = event.queryStringParameters || {};
-
-  if (!startDate || !endDate) {
-    return {
-      statusCode: 400,
-      headers,
-      body: JSON.stringify({ error: 'startDate and endDate query params required (YYYY-MM-DD)' }),
-    };
-  }
+  const { startDate, endDate, action } = event.queryStringParameters || {};
 
   if (!process.env.ST_APP_ID || !process.env.ST_CLIENT_SECRET || !process.env.ST_APP_KEY || !process.env.ST_TENANT_ID) {
     return {
       statusCode: 500,
       headers,
       body: JSON.stringify({ error: 'ServiceTitan environment variables not configured' }),
+    };
+  }
+
+  // ── Active memberships snapshot (no date filter) ──
+  if (action === 'active') {
+    try {
+      const token = await getAccessToken();
+      const activeRaw = await fetchAllMemberships(token, { status: 'Active' });
+      const typeIds = activeRaw.map(i => i.membershipTypeId).filter(Boolean);
+      const typeNameMap = await fetchMembershipTypeNames(token, typeIds);
+
+      // Count by type name (excluding Free types)
+      const byType = {};
+      activeRaw.forEach(item => {
+        const typeName = getTypeName(item, typeNameMap);
+        if (typeName.toLowerCase().includes('free')) return;
+        byType[typeName] = (byType[typeName] || 0) + 1;
+      });
+
+      const sortedTypes = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+      const total = sortedTypes.reduce((sum, [, n]) => sum + n, 0);
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ total, byType: sortedTypes }),
+      };
+    } catch (err) {
+      console.error('Active memberships error:', err);
+      return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
+    }
+  }
+
+  // ── Default: sold/cancelled in date range ──
+  if (!startDate || !endDate) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ error: 'startDate and endDate query params required (YYYY-MM-DD)' }),
     };
   }
 
@@ -258,7 +289,7 @@ exports.handler = async (event) => {
     // Collect type IDs to look up
     const typeIds = allItems.map(i => i.membershipTypeId).filter(Boolean);
 
-    // Fetch lookup maps in parallel (employee fetch gets all, no ID filter needed)
+    // Fetch lookup maps in parallel
     const [nameMap, typeNameMap] = await Promise.all([
       fetchEmployeeNames(token),
       fetchMembershipTypeNames(token, typeIds),

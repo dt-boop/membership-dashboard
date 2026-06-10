@@ -97,7 +97,7 @@
     header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: .02em; }
     .header-right { display: flex; align-items: center; gap: 12px; }
     #last-updated { font-size: .75rem; opacity: .75; }
-    #refresh-btn {
+    #refresh-btn, #active-btn {
       background: rgba(255,255,255,.15);
       border: 1px solid rgba(255,255,255,.3);
       color: var(--white);
@@ -105,7 +105,7 @@
       font-size: .8rem; cursor: pointer;
       transition: background .2s;
     }
-    #refresh-btn:hover { background: rgba(255,255,255,.25); }
+    #refresh-btn:hover, #active-btn:hover { background: rgba(255,255,255,.25); }
 
     /* ─── Main layout ─── */
     main { max-width: 1300px; margin: 0 auto; padding: 28px 24px 60px; }
@@ -329,6 +329,22 @@
   </div>
 </div>
 
+<!-- ══════════════ ACTIVE MEMBERS MODAL ══════════════ -->
+<div id="active-modal" onclick="if(event.target===this)closeActiveModal()" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.45);align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:18px;width:min(520px,92vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden;">
+    <div style="background:var(--blue);padding:20px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="color:#fff;font-size:1rem;font-weight:700;letter-spacing:.02em;">Active Memberships</div>
+        <div style="color:rgba(255,255,255,.7);font-size:.75rem;margin-top:2px;">Current snapshot — all active plans</div>
+      </div>
+      <button onclick="closeActiveModal()" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:.85rem;">✕ Close</button>
+    </div>
+    <div id="active-modal-body" style="padding:24px;overflow-y:auto;flex:1;">
+      <div style="text-align:center;color:var(--muted);padding:32px 0;">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════ LOADING OVERLAY ══════════════ -->
 <div id="loading-overlay">
   <div class="spinner"></div>
@@ -349,6 +365,7 @@
     </div>
     <div class="header-right">
       <span id="last-updated"></span>
+      <button id="active-btn" onclick="openActiveModal()">📊 Active Members</button>
       <button id="refresh-btn" onclick="loadData()">↻ Refresh</button>
     </div>
   </header>
@@ -731,6 +748,69 @@ function firstName(fullName) {
 function formatRangeLabel(start, end) {
   const fmt = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return `${fmt(start)} – ${fmt(end)}`;
+}
+
+// ══════════ ACTIVE MEMBERS MODAL ══════════
+function openActiveModal() {
+  const modal = document.getElementById('active-modal');
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  loadActiveData();
+}
+
+function closeActiveModal() {
+  const modal = document.getElementById('active-modal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeActiveModal();
+});
+
+async function loadActiveData() {
+  const body = document.getElementById('active-modal-body');
+  body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:32px 0;"><div style="font-size:1.5rem;margin-bottom:8px;">⏳</div>Fetching active memberships…</div>';
+
+  try {
+    const res = await fetch('/.netlify/functions/servicetitan?action=active', {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+
+    const { total, byType } = json;
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    let rows = byType.map(([type, count]) => {
+      const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--light);">
+          <div style="font-size:.875rem;font-weight:600;color:var(--text);flex:1;padding-right:12px;">${type}</div>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:80px;height:6px;background:var(--light);border-radius:3px;overflow:hidden;">
+              <div style="width:${pct}%;height:100%;background:var(--blue);border-radius:3px;"></div>
+            </div>
+            <div style="font-size:.875rem;font-weight:700;color:var(--blue);min-width:32px;text-align:right;">${count}</div>
+            <div style="font-size:.75rem;color:var(--muted);min-width:36px;text-align:right;">${pct}%</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:20px;">
+        <div style="font-size:3rem;font-weight:800;color:var(--blue);line-height:1;">${total.toLocaleString()}</div>
+        <div>
+          <div style="font-size:.9rem;font-weight:600;color:var(--text);">Total Active Members</div>
+          <div style="font-size:.75rem;color:var(--muted);">As of ${now} · Excludes free memberships</div>
+        </div>
+      </div>
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px;">By Membership Type</div>
+      ${rows}`;
+  } catch (err) {
+    body.innerHTML = `<div style="color:var(--red);padding:24px;text-align:center;">Error: ${err.message}</div>`;
+  }
 }
 </script>
 </body>
