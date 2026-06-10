@@ -16,7 +16,7 @@ async function getAccessToken() {
   const params = new URLSearchParams({
     grant_type: 'client_credentials',
     client_id: process.env.ST_APP_ID,
-    client_secret: process.env.ST_APP_KEY,
+    client_secret: process.env.ST_CLIENT_SECRET,
   });
 
   const response = await fetch(ST_AUTH_URL, {
@@ -158,7 +158,7 @@ exports.handler = async (event) => {
     };
   }
 
-  if (!process.env.ST_APP_ID || !process.env.ST_APP_KEY || !process.env.ST_TENANT_ID) {
+  if (!process.env.ST_APP_ID || !process.env.ST_CLIENT_SECRET || !process.env.ST_APP_KEY || !process.env.ST_TENANT_ID) {
     return {
       statusCode: 500,
       headers,
