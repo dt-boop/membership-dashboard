@@ -211,6 +211,7 @@ exports.handler = async (event) => {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
   };
 
   if (event.httpMethod === 'OPTIONS') {
