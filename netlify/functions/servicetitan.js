@@ -66,11 +66,6 @@ async function fetchAllMemberships(token, queryParams) {
 
     const data = await response.json();
     const items = data.data || [];
-    // Log first item keys on first page to diagnose field names
-    if (page === 1 && items.length > 0) {
-      console.log('DEBUG first item keys:', JSON.stringify(Object.keys(items[0])));
-      console.log('DEBUG first item sample:', JSON.stringify(items[0]).slice(0, 800));
-    }
     allItems = allItems.concat(items);
 
     // ST returns hasMore or we infer it from page size
@@ -81,8 +76,53 @@ async function fetchAllMemberships(token, queryParams) {
   return allItems;
 }
 
+// Build a map of employee ID -> name by fetching from the employees endpoint
+async function fetchEmployeeNames(token, ids) {
+  if (!ids || ids.length === 0) return {};
+
+  const tenantId = process.env.ST_TENANT_ID;
+  const appKey = process.env.ST_APP_KEY;
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+
+  // ServiceTitan employees endpoint (settings/v2)
+  const url = new URL(`${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`);
+  url.searchParams.set('pageSize', '500');
+  url.searchParams.set('ids', uniqueIds.join(','));
+
+  try {
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'ST-App-Key': appKey,
+      },
+    });
+
+    if (!response.ok) {
+      console.warn('Employees endpoint failed:', response.status, await response.text());
+      return {};
+    }
+
+    const data = await response.json();
+    const nameMap = {};
+    (data.data || []).forEach(emp => {
+      if (emp.id) {
+        nameMap[emp.id] = emp.name || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || String(emp.id);
+      }
+    });
+    return nameMap;
+  } catch (err) {
+    console.warn('fetchEmployeeNames error:', err.message);
+    return {};
+  }
+}
+
+function getMembershipTypeId(item) {
+  return item.membershipTypeId || null;
+}
+
+// We can't get membership type names without a separate lookup; use ID for now
+// but we'll use it only for "Free" filtering if a name lookup is available
 function getMembershipTypeName(item) {
-  // Handle various possible field structures in ST response
   return (
     item.membershipType?.name ||
     item.type?.name ||
@@ -91,45 +131,37 @@ function getMembershipTypeName(item) {
   );
 }
 
-function getSoldByName(item) {
-  return (
-    item.soldBy?.name ||
-    item.createdBy?.name ||
-    item.employee?.name ||
-    item.completedBy?.name ||
-    'Unknown'
-  );
+function getSoldById(item) {
+  // Use soldById first, fall back to createdById then activatedById
+  return item.soldById || item.createdById || item.activatedById || null;
 }
 
 function filterFreeTypes(items) {
   return items.filter(item => {
     const typeName = getMembershipTypeName(item).toLowerCase();
-    return !typeName.includes('free');
+    // If no type name resolved (just an ID), allow through — we can't filter by name
+    return !typeName || !typeName.includes('free');
   });
 }
 
-function processSoldItem(item) {
+function processSoldItem(item, nameMap) {
+  const id = getSoldById(item);
   return {
     id: item.id,
-    soldBy: getSoldByName(item),
-    membershipType: getMembershipTypeName(item) || 'Unknown',
-    createdOn: item.createdOn || item.startDate,
-    customer: item.customer?.name || item.customerName || '',
+    soldBy: (id && nameMap[id]) ? nameMap[id] : 'Unknown',
+    membershipType: getMembershipTypeName(item) || `Type #${item.membershipTypeId || '?'}`,
+    createdOn: item.createdOn || item.from,
     status: item.status,
   };
 }
 
-function processCancelledItem(item) {
+function processCancelledItem(item, nameMap) {
+  const id = getSoldById(item);
   return {
     id: item.id,
-    soldBy: getSoldByName(item),
-    membershipType: getMembershipTypeName(item) || 'Unknown',
-    cancelledOn:
-      item.cancellationDate ||
-      item.cancelledOn ||
-      item.modifiedOn ||
-      item.endDate,
-    customer: item.customer?.name || item.customerName || '',
+    soldBy: (id && nameMap[id]) ? nameMap[id] : 'Unknown',
+    membershipType: getMembershipTypeName(item) || `Type #${item.membershipTypeId || '?'}`,
+    cancelledOn: item.cancellationDate || item.modifiedOn,
     status: item.status,
   };
 }
@@ -174,7 +206,7 @@ exports.handler = async (event) => {
   try {
     const token = await getAccessToken();
 
-    // Fetch sold (created in range) and cancelled (modified/cancelled in range) in parallel
+    // Fetch sold and cancelled in parallel
     const [soldRaw, cancelledRaw] = await Promise.all([
       fetchAllMemberships(token, {
         createdOnOrAfter: `${startDate}T00:00:00Z`,
@@ -187,8 +219,13 @@ exports.handler = async (event) => {
       }),
     ]);
 
-    const sold = filterFreeTypes(soldRaw).map(processSoldItem);
-    const cancelled = filterFreeTypes(cancelledRaw).map(processCancelledItem);
+    // Collect all employee IDs we need to resolve
+    const allItems = [...soldRaw, ...cancelledRaw];
+    const employeeIds = allItems.map(getSoldById).filter(Boolean);
+    const nameMap = await fetchEmployeeNames(token, employeeIds);
+
+    const sold = filterFreeTypes(soldRaw).map(item => processSoldItem(item, nameMap));
+    const cancelled = filterFreeTypes(cancelledRaw).map(item => processCancelledItem(item, nameMap));
 
     return {
       statusCode: 200,
