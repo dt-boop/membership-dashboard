@@ -113,6 +113,8 @@ async function fetchEmployeeNames(token) {
   const endpoints = [
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/employees`,
     `${ST_API_BASE}/settings/v2/tenant/${tenantId}/technicians`,
+    `${ST_API_BASE}/dispatch/v2/tenant/${tenantId}/technicians`,
+    `${ST_API_BASE}/jpm/v2/tenant/${tenantId}/technicians`,
   ];
 
   for (const base of endpoints) {
