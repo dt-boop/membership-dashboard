@@ -176,7 +176,7 @@ exports.handler = async (event) => {
         createdBefore: `${endDate}T23:59:59Z`,
       }),
       fetchAllMemberships(token, {
-        status: 'Cancelled',
+        status: 'Canceled',
         modifiedOnOrAfter: `${startDate}T00:00:00Z`,
         modifiedBefore: `${endDate}T23:59:59Z`,
       }),
