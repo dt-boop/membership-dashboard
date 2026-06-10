@@ -468,6 +468,16 @@
 const OFFICE_STAFF = ['Mikaela', 'Mariela', 'Amanda', 'Danielle', 'Taylor'];
 const PASSWORD = 'MVP';
 
+// Names that should be collapsed into "Previous Employee"
+const PREVIOUS_EMPLOYEE_NAMES = ['Patty Greiner'];
+
+function normalizeName(name) {
+  if (!name) return 'Unknown';
+  if (/^Employee #\d+$/.test(name)) return 'Previous Employee';
+  if (PREVIOUS_EMPLOYEE_NAMES.includes(name)) return 'Previous Employee';
+  return name;
+}
+
 // ══════════ PASSWORD GATE ══════════
 document.getElementById('pw-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') checkPassword();
@@ -582,13 +592,15 @@ function renderDashboard(sold, cancelled, startDate, endDate) {
   const people = {};
 
   sold.forEach(({ soldBy }) => {
-    if (!people[soldBy]) people[soldBy] = { sold: 0, lost: 0 };
-    people[soldBy].sold++;
+    const name = normalizeName(soldBy);
+    if (!people[name]) people[name] = { sold: 0, lost: 0 };
+    people[name].sold++;
   });
 
   cancelled.forEach(({ soldBy }) => {
-    if (!people[soldBy]) people[soldBy] = { sold: 0, lost: 0 };
-    people[soldBy].lost++;
+    const name = normalizeName(soldBy);
+    if (!people[name]) people[name] = { sold: 0, lost: 0 };
+    people[name].lost++;
   });
 
   const sorted = Object.entries(people).sort((a, b) => b[1].sold - a[1].sold);
@@ -596,10 +608,10 @@ function renderDashboard(sold, cancelled, startDate, endDate) {
   // ── Office vs Tech split ──
   let officeSold = 0, officeLost = 0, techSold = 0, techLost = 0;
   sold.forEach(({ soldBy }) => {
-    if (isOffice(soldBy)) officeSold++; else techSold++;
+    if (isOffice(normalizeName(soldBy))) officeSold++; else techSold++;
   });
   cancelled.forEach(({ soldBy }) => {
-    if (isOffice(soldBy)) officeLost++; else techLost++;
+    if (isOffice(normalizeName(soldBy))) officeLost++; else techLost++;
   });
 
   const officeNet = officeSold - officeLost;
